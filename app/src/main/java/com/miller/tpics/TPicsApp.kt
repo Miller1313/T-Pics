@@ -7,6 +7,8 @@ import coil.decode.VideoFrameDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import com.miller.tpics.data.Auth
+import com.miller.tpics.data.AutoBackup
+import com.miller.tpics.data.Suggestions
 import com.miller.tpics.data.Http
 import com.miller.tpics.data.Prefs
 import com.miller.tpics.data.Store
@@ -21,6 +23,8 @@ class TPicsApp : Application(), ImageLoaderFactory {
         Auth.init()
         Store.init(this)
         UploadQueue.init(this)
+        AutoBackup.init(this)
+        Suggestions.init(this)
     }
 
     /**

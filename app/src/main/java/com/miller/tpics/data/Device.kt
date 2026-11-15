@@ -38,6 +38,7 @@ data class LocalItem(
     val mime: String,
     val w: Int,
     val h: Int,
+    val added: Long = 0,
 ) {
     val sig: String get() = "$name|$size"
     val key: String get() = (if (isVideo) "v" else "i") + id
@@ -51,14 +52,32 @@ object Device {
         Build.VERSION.SDK_INT >= 33 -> arrayOf(
             Manifest.permission.READ_MEDIA_IMAGES,
             Manifest.permission.READ_MEDIA_VIDEO,
+            Manifest.permission.ACCESS_MEDIA_LOCATION,
+        )
+        Build.VERSION.SDK_INT >= 29 -> arrayOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.ACCESS_MEDIA_LOCATION,
         )
         else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    /**
+     * Borra del teléfono archivos ya respaldados. En Android 11+ devuelve un pedido
+     * que el sistema muestra al usuario para confirmar; en versiones anteriores borra directo.
+     */
+    fun deleteRequest(ctx: Context, uris: List<Uri>): android.content.IntentSender? {
+        if (uris.isEmpty()) return null
+        if (Build.VERSION.SDK_INT >= 30) {
+            return MediaStore.createDeleteRequest(ctx.contentResolver, uris).intentSender
+        }
+        uris.forEach { runCatching { ctx.contentResolver.delete(it, null, null) } }
+        return null
     }
 
     fun hasPermission(ctx: Context): Boolean {
         fun ok(p: String) = ContextCompat.checkSelfPermission(ctx, p) == PackageManager.PERMISSION_GRANTED
         if (Build.VERSION.SDK_INT >= 34 && ok(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)) return true
-        return permissions().any { ok(it) }
+        return permissions().any { it != Manifest.permission.ACCESS_MEDIA_LOCATION && ok(it) }
     }
 
     suspend fun load(ctx: Context): List<LocalItem> = withContext(Dispatchers.IO) {
@@ -84,6 +103,7 @@ object Device {
             "datetaken",
             "bucket_id",
             "bucket_display_name",
+            MediaStore.MediaColumns.DATE_ADDED,
         )
         if (video) cols.add("duration")
 
@@ -98,6 +118,7 @@ object Device {
             val iTaken = c.getColumnIndex("datetaken")
             val iBid = c.getColumnIndex("bucket_id")
             val iBname = c.getColumnIndex("bucket_display_name")
+            val iAdded = c.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED)
             val iDur = if (video) c.getColumnIndex("duration") else -1
 
             while (c.moveToNext()) {
@@ -119,6 +140,7 @@ object Device {
                             ?: if (video) "video/mp4" else "image/jpeg",
                         w = if (iW >= 0) c.getInt(iW) else 0,
                         h = if (iH >= 0) c.getInt(iH) else 0,
+                        added = if (iAdded >= 0) c.getLong(iAdded) else 0L,
                     )
                 )
             }

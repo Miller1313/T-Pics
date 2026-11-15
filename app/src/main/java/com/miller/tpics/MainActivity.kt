@@ -2,7 +2,7 @@ package com.miller.tpics
 
 import android.graphics.Color
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -10,13 +10,15 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.miller.tpics.data.Auth
+import com.miller.tpics.data.AutoBackup
+import kotlinx.coroutines.launch
 import com.miller.tpics.data.Prefs
 import com.miller.tpics.data.Store
 import com.miller.tpics.ui.AppRoot
 import com.miller.tpics.ui.TPicsTheme
 import com.miller.tpics.ui.isDark
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -37,6 +39,9 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // Al volver a la app se traen los cambios hechos desde otros dispositivos.
-        if (Auth.session.value != null && Store.loaded.value) Store.syncNow()
+        if (Auth.session.value != null && Store.loaded.value) {
+            Store.syncNow()
+            Store.scope.launch { runCatching { AutoBackup.scan(applicationContext) } }
+        }
     }
 }

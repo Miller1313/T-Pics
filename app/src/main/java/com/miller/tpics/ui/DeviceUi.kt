@@ -2,6 +2,12 @@ package com.miller.tpics.ui
 
 import android.Manifest
 import android.os.Build
+import android.app.Activity
+import androidx.activity.result.IntentSenderRequest
+import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -211,6 +217,16 @@ fun FolderScreen(bucketId: String?, name: String) {
     var selected by remember { mutableStateOf(setOf<String>()) }
     var picking by remember { mutableStateOf(false) }
     val pendingItems = remember(list, sigs) { list.filter { it.sig !in sigs } }
+    val backedItems = remember(list, sigs) { list.filter { it.sig in sigs } }
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var confirmFree by remember { mutableStateOf(false) }
+    val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Store.say("Espacio liberado en el teléfono")
+            scope.launch { DeviceCache.items.value = Device.load(ctx) }
+        }
+    }
 
     BackHandler(enabled = selected.isNotEmpty()) { selected = emptySet() }
 
@@ -234,6 +250,11 @@ fun FolderScreen(bucketId: String?, name: String) {
                 )
             } else {
                 Bar(name, "${list.size} elementos · ${pendingItems.size} sin respaldar") {
+                    if (backedItems.isNotEmpty()) {
+                        IconButton(onClick = { confirmFree = true }) {
+                            Icon(Icons.Outlined.CleaningServices, "Liberar espacio")
+                        }
+                    }
                     if (pendingItems.isNotEmpty()) {
                         TextButton(onClick = { selected = pendingItems.map { it.key }.toSet() }) {
                             Text("Elegir todo")
@@ -328,6 +349,37 @@ fun FolderScreen(bucketId: String?, name: String) {
                 }
             }
         }
+    }
+
+    if (confirmFree) {
+        val bytes = backedItems.sumOf { it.size }
+        AlertDialog(
+            onDismissRequest = { confirmFree = false },
+            title = { Text("Liberar espacio") },
+            text = {
+                Text(
+                    "Se borrarán del teléfono ${backedItems.size} archivos de esta carpeta que ya están respaldados " +
+                        "(${sizeText(bytes)}). Siguen guardados en T-Pics y puedes descargarlos cuando quieras."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmFree = false
+                    try {
+                        val sender = Device.deleteRequest(ctx, backedItems.map { it.uri })
+                        if (sender != null) {
+                            deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+                        } else {
+                            Store.say("Espacio liberado en el teléfono")
+                            scope.launch { DeviceCache.items.value = Device.load(ctx) }
+                        }
+                    } catch (e: Exception) {
+                        Store.say("No se pudo liberar espacio en este teléfono")
+                    }
+                }) { Text("Borrar del teléfono") }
+            },
+            dismissButton = { TextButton(onClick = { confirmFree = false }) { Text("Cancelar") } },
+        )
     }
 
     if (picking) {

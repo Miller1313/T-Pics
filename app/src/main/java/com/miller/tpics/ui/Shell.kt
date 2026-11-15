@@ -30,6 +30,8 @@ import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.Label
 import androidx.compose.material.icons.outlined.LabelOff
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.Settings
@@ -78,6 +80,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.miller.tpics.data.Auth
+import com.miller.tpics.data.AutoBackup
+import com.miller.tpics.data.Suggestions
+import com.miller.tpics.data.Updater
+import com.miller.tpics.data.ensureOpen
 import com.miller.tpics.data.Db
 import com.miller.tpics.data.Store
 import com.miller.tpics.data.ThumbBackfill
@@ -98,6 +104,8 @@ sealed interface Screen {
     data object Device : Screen
     data class Folder(val bucketId: String?, val name: String) : Screen
     data object Uploads : Screen
+    data object Auto : Screen
+    data object Private : Screen
     data object Trash : Screen
     data object StorageInfo : Screen
     data object Admin : Screen
@@ -136,10 +144,12 @@ fun AppRoot() {
         AuthScreen()
     } else {
         val loaded by Store.loaded.collectAsState()
+        val ctx = androidx.compose.ui.platform.LocalContext.current.applicationContext
         LaunchedEffect(s.uid) {
-            Store.open(s.uid)
-            UploadQueue.open(s.uid)
+            ensureOpen()
             Store.sync()
+            launch { Updater.check() }
+            launch { runCatching { AutoBackup.scan(ctx) } }
             ThumbBackfill.run()
         }
         if (loaded) MainShell() else Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
@@ -148,6 +158,8 @@ fun AppRoot() {
 
 fun signOutEverywhere() {
     UploadQueue.close()
+    AutoBackup.close()
+    Suggestions.close()
     Store.close()
     Auth.signOut()
 }
@@ -189,22 +201,24 @@ fun MainShell() {
         ) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                 when (val screen = nav.current) {
-                    Screen.Photos -> GalleryScreen("Fotos", home = true) { it.trashedAt == 0L }
-                    Screen.Videos -> GalleryScreen("Videos", empty = "Aún no hay videos") { it.trashedAt == 0L && it.isVideo }
-                    Screen.Favorites -> GalleryScreen("Favoritos", empty = "Marca con ♥ las que más te gusten") { it.trashedAt == 0L && it.fav }
-                    Screen.Untagged -> GalleryScreen("Sin etiquetar", empty = "Todo está etiquetado") { it.trashedAt == 0L && it.tags.isEmpty() }
+                    Screen.Photos -> GalleryScreen("Fotos", home = true) { it.visible }
+                    Screen.Videos -> GalleryScreen("Videos", empty = "Aún no hay videos") { it.visible && it.isVideo }
+                    Screen.Favorites -> GalleryScreen("Favoritos", empty = "Marca con ♥ las que más te gusten") { it.visible && it.fav }
+                    Screen.Untagged -> GalleryScreen("Sin etiquetar", empty = "Todo está etiquetado") { it.visible && it.tags.isEmpty() }
                     Screen.Trash -> GalleryScreen("Papelera", trash = true, empty = "La papelera está vacía") { it.trashedAt > 0L }
                     is Screen.TagView -> {
                         val tags by Store.tags.collectAsState()
                         val tag = tags.firstOrNull { it.id == screen.tagId }
                         GalleryScreen(tag?.name ?: "Etiqueta", empty = "Ninguna foto con esta etiqueta") {
-                            it.trashedAt == 0L && screen.tagId in it.tags
+                            it.visible && screen.tagId in it.tags
                         }
                     }
                     Screen.Tags -> TagsScreen()
                     Screen.Device -> DeviceScreen()
                     is Screen.Folder -> FolderScreen(screen.bucketId, screen.name)
                     Screen.Uploads -> UploadsScreen()
+                    Screen.Auto -> AutoScreen()
+                    Screen.Private -> PrivateScreen()
                     Screen.StorageInfo -> StorageScreen()
                     Screen.Admin -> AdminScreen()
                     Screen.Settings -> SettingsScreen()
@@ -225,7 +239,9 @@ private fun DrawerContent(current: Screen, onPick: (Screen) -> Unit) {
     val media by Store.media.collectAsState()
     val queue by UploadQueue.items.collectAsState()
     val pending = queue.count { it.status == "queued" || it.status == "running" }
-    val untagged = remember(media) { media.count { it.trashedAt == 0L && it.tags.isEmpty() } }
+    val suggestions by Suggestions.items.collectAsState()
+    val toReview = suggestions.size
+    val untagged = remember(media) { media.count { it.visible && it.tags.isEmpty() } }
 
     ModalDrawerSheet(
         drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -280,8 +296,10 @@ private fun DrawerContent(current: Screen, onPick: (Screen) -> Unit) {
             item("Sin etiquetar", Icons.Outlined.LabelOff, Screen.Untagged, if (untagged > 0) "$untagged" else null)
             divider()
             item("Subir desde el teléfono", Icons.Outlined.PhoneAndroid, Screen.Device)
+            item("Respaldo automático", Icons.Outlined.Sync, Screen.Auto, if (toReview > 0) "$toReview" else null)
             item("Subidas", Icons.Outlined.CloudUpload, Screen.Uploads, if (pending > 0) "$pending" else null)
             divider()
+            item("Carpeta privada", Icons.Outlined.Lock, Screen.Private)
             item("Papelera", Icons.Outlined.Delete, Screen.Trash)
             item("Almacenamiento y plan", Icons.Outlined.Storage, Screen.StorageInfo)
             if (admin) item("Administración", Icons.Outlined.AdminPanelSettings, Screen.Admin)

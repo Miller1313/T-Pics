@@ -39,6 +39,9 @@ data class UploadItem(
     val h: Int,
     val dur: Long,
     val tags: List<String>,
+    val auto: Boolean = false,      // vino del respaldo automático
+    val folder: String = "",        // carpeta de origen
+    val suggest: Boolean = false,   // proponer etiquetas después de subir
     val status: String = QUEUED,
     val progress: Float = 0f,
     val error: String = "",
@@ -75,6 +78,10 @@ object UploadQueue {
     private fun file() = File(appContext.filesDir, "queue_$owner.json")
 
     fun open(uid: String) {
+        if (owner == uid) {
+            if (items.value.any { it.status == UploadItem.QUEUED }) start()
+            return
+        }
         owner = uid
         val list = ArrayList<UploadItem>()
         runCatching {
@@ -92,7 +99,8 @@ object UploadQueue {
                             id = o.getString("id"), uri = o.getString("uri"), name = o.optString("name"),
                             size = o.optLong("size"), isVideo = o.optBoolean("video"), mime = o.optString("mime"),
                             date = o.optLong("date"), w = o.optInt("w"), h = o.optInt("h"), dur = o.optLong("dur"),
-                            tags = tags, status = status, error = o.optString("error"),
+                            tags = tags, auto = o.optBoolean("auto"), folder = o.optString("folder"),
+                            suggest = o.optBoolean("suggest"), status = status, error = o.optString("error"),
                         )
                     )
                 }
@@ -118,6 +126,7 @@ object UploadQueue {
                     JSONObject().put("id", i.id).put("uri", i.uri).put("name", i.name).put("size", i.size)
                         .put("video", i.isVideo).put("mime", i.mime).put("date", i.date).put("w", i.w)
                         .put("h", i.h).put("dur", i.dur).put("tags", JSONArray(i.tags))
+                        .put("auto", i.auto).put("folder", i.folder).put("suggest", i.suggest)
                         .put("status", i.status).put("error", i.error)
                 )
             }
@@ -131,13 +140,21 @@ object UploadQueue {
         if (save) persist()
     }
 
-    fun enqueue(list: List<LocalItem>, tags: List<String>) {
+    fun enqueue(
+        list: List<LocalItem>,
+        tags: List<String>,
+        auto: Boolean = false,
+        folder: String = "",
+        suggest: Boolean = false,
+    ) {
+        if (list.isEmpty()) return
         val waiting = items.value.filter { it.status == UploadItem.QUEUED || it.status == UploadItem.RUNNING }
             .map { it.uri }.toHashSet()
         val fresh = list.filter { it.uri.toString() !in waiting }.map {
             UploadItem(
                 id = newId(), uri = it.uri.toString(), name = it.name, size = it.size, isVideo = it.isVideo,
                 mime = it.mime, date = it.date, w = it.w, h = it.h, dur = it.duration, tags = tags,
+                auto = auto, folder = folder.ifEmpty { it.bucketName }, suggest = suggest,
             )
         }
         synchronized(this) {
@@ -203,6 +220,8 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
     override suspend fun getForegroundInfo(): ForegroundInfo = info("Preparando…", 0, 0)
 
     override suspend fun doWork(): Result {
+        // Si Android reinició la app en segundo plano, primero se carga lo ya respaldado.
+        if (!ensureOpen()) return Result.success()
         runCatching { setForeground(info("Preparando…", 0, 0)) }
         var done = 0
         while (true) {
@@ -211,9 +230,9 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
             runCatching { setForeground(info(item.name, done, total)) }
             UploadQueue.set(item.id) { it.copy(status = UploadItem.RUNNING, progress = 0f, error = "") }
             try {
-                val duplicate = uploadOne(item)
+                val newId = uploadOne(item)
                 UploadQueue.set(item.id) {
-                    it.copy(status = if (duplicate) UploadItem.DUPLICATE else UploadItem.DONE, progress = 1f)
+                    it.copy(status = if (newId == null) UploadItem.DUPLICATE else UploadItem.DONE, progress = 1f)
                 }
             } catch (e: Exception) {
                 val offline = e is java.io.IOException && e !is java.io.FileNotFoundException
@@ -259,8 +278,8 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
         return n
     }
 
-    /** @return true si ya estaba respaldado (no se subió de nuevo). */
-    private suspend fun uploadOne(item: UploadItem): Boolean = withContext(Dispatchers.IO) {
+    /** @return el id de la foto nueva, o null si ya estaba respaldada (no se subió de nuevo). */
+    private suspend fun uploadOne(item: UploadItem): String? = withContext(Dispatchers.IO) {
         val ctx = applicationContext
         val uri = Uri.parse(item.uri)
         val resolver = ctx.contentResolver
@@ -283,11 +302,12 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
 
         Store.backedHashes[hash]?.let { existing ->
             if (item.tags.isNotEmpty()) Store.addTags(listOf(existing), item.tags)
-            return@withContext true
+            return@withContext null
         }
 
         // 2) Miniatura
-        val thumbRef = Thumbs.fromUri(ctx, uri, item.isVideo)?.let { sendPart(it, it.size, "mini_${item.name}.jpg") } ?: ""
+        val thumbBytes = Thumbs.fromUri(ctx, uri, item.isVideo)
+        val thumbRef = thumbBytes?.let { sendPart(it, it.size, "mini_${item.name}.jpg") } ?: ""
         UploadQueue.set(item.id, save = false) { it.copy(progress = 0.05f) }
 
         // 3) Archivo original, en trozos si es grande
@@ -329,7 +349,13 @@ class UploadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
             updated = System.currentTimeMillis(),
         )
         Store.saveNew(media)
-        false
+
+        // 5) Etiquetas sugeridas: la foto ya está a salvo; las etiquetas esperan tu aprobación.
+        if (item.suggest) {
+            val labels = runCatching { Labeler.suggest(ctx, uri, item, thumbBytes) }.getOrDefault(emptyList())
+            Suggestions.put(Suggestion(media.id, item.folder, labels))
+        }
+        media.id
     }
 }
 

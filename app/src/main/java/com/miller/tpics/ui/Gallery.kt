@@ -9,6 +9,25 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import android.content.Intent
+import android.net.Uri
+import com.miller.tpics.BuildConfig
+import com.miller.tpics.data.Updater
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -253,6 +272,7 @@ fun GalleryScreen(
     title: String,
     home: Boolean = false,
     trash: Boolean = false,
+    locked: Boolean = false,
     empty: String = "Aún no hay fotos",
     filter: (Media) -> Boolean,
 ) {
@@ -286,6 +306,9 @@ fun GalleryScreen(
     }
     val cells = remember(shown) { buildCells(shown) }
     val selecting = selected.isNotEmpty()
+    val gridState = rememberLazyGridState()
+    val latestShown by rememberUpdatedState(shown)
+    val updateTo by Updater.latest.collectAsState()
 
     BackHandler(enabled = selecting || searching) {
         if (selecting) selected = emptySet() else { searching = false; query = "" }
@@ -352,6 +375,10 @@ fun GalleryScreen(
                                         },
                                     )
                                     DropdownMenuItem(
+                                        text = { Text(if (locked) "Sacar de la carpeta privada" else "Mover a carpeta privada") },
+                                        onClick = { menu = false; Store.setPrivate(selected, !locked); selected = emptySet() },
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("Quitar de favoritos") },
                                         onClick = { menu = false; Store.setFav(selected, false); selected = emptySet() },
                                     )
@@ -408,6 +435,15 @@ fun GalleryScreen(
         Column(Modifier.fillMaxSize().padding(pad)) {
             if (syncing || busy) LinearProgressIndicator(Modifier.fillMaxWidth().height(2.dp))
 
+            if (home && updateTo > BuildConfig.VERSION_CODE && Updater.url.isNotEmpty()) {
+                Notice("Hay una versión nueva de T-Pics", "Trae mejoras y correcciones. Se instala encima de la actual.", "Descargar") {
+                    runCatching {
+                        ctx.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(Updater.url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+            }
             if (home && api.isEmpty()) {
                 Notice(
                     if (admin) "Falta conectar el servidor" else "La app aún se está configurando",
@@ -452,12 +488,43 @@ fun GalleryScreen(
                     if (home && query.isEmpty() && chip == null) "Toca “Subir” para respaldar las fotos de tu teléfono." else null,
                 )
             } else {
+                Box(Modifier.fillMaxSize()) {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Fixed(columns),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     contentPadding = PaddingValues(bottom = 96.dp),
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                        // Mantener presionado y arrastrar selecciona todo el tramo.
+                        var anchor = -1
+                        var base = emptySet<String>()
+                        fun indexAt(offset: Offset): Int {
+                            val hit = gridState.layoutInfo.visibleItemsInfo.firstOrNull { info ->
+                                offset.x >= info.offset.x && offset.x < info.offset.x + info.size.width &&
+                                    offset.y >= info.offset.y && offset.y < info.offset.y + info.size.height
+                            } ?: return -1
+                            val key = hit.key as? String ?: return -1
+                            return latestShown.indexOfFirst { it.id == key }
+                        }
+                        detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                anchor = indexAt(offset)
+                                base = selected
+                                if (anchor >= 0) selected = base + latestShown[anchor].id
+                            },
+                            onDragEnd = { anchor = -1 },
+                            onDragCancel = { anchor = -1 },
+                            onDrag = { change, _ ->
+                                val now = indexAt(change.position)
+                                if (anchor >= 0 && now >= 0 && anchor < latestShown.size) {
+                                    val from = minOf(anchor, now)
+                                    val to = maxOf(anchor, now)
+                                    selected = base + latestShown.subList(from, to + 1).map { it.id }
+                                }
+                            },
+                        )
+                    },
                 ) {
                     items(
                         cells,
@@ -488,6 +555,14 @@ fun GalleryScreen(
                         }
                     }
                 }
+                FastScroller(gridState, cells.size) { i ->
+                    when (val c = cells.getOrNull(i)) {
+                        is Cell.Item -> monthLabel(c.m.date)
+                        is Cell.Header -> (cells.getOrNull(i + 1) as? Cell.Item)?.let { monthLabel(it.m.date) } ?: ""
+                        null -> ""
+                    }
+                }
+                }
             }
         }
     }
@@ -517,6 +592,74 @@ fun GalleryScreen(
             },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancelar") } },
         )
+    }
+}
+
+private val MONTH_FMT = DateTimeFormatter.ofPattern("MMM yyyy", ES)
+
+fun monthLabel(ms: Long): String =
+    Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).format(MONTH_FMT).replace(".", "")
+
+/** Barra para recorrer rápido toda la galería; muestra el mes mientras se arrastra. */
+@Composable
+fun BoxScope.FastScroller(state: LazyGridState, total: Int, label: (Int) -> String) {
+    if (total < 60) return
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val thumbPx = with(density) { 52.dp.toPx() }
+    var trackPx by remember { mutableStateOf(0) }
+    var dragging by remember { mutableStateOf(false) }
+    var dragY by remember { mutableStateOf(0f) }
+    val first by remember { derivedStateOf { state.firstVisibleItemIndex } }
+    val range = (trackPx - thumbPx).coerceAtLeast(1f)
+    val last = (total - 1).coerceAtLeast(1)
+    val y = if (dragging) dragY else first.toFloat() / last * range
+    val latestY by rememberUpdatedState(y)
+    val latestRange by rememberUpdatedState(range)
+    val latestLast by rememberUpdatedState(last)
+
+    Box(
+        Modifier.align(Alignment.TopEnd).fillMaxHeight().width(44.dp).padding(top = 8.dp, bottom = 100.dp)
+            .onSizeChanged { trackPx = it.height }
+    ) {
+        Box(
+            Modifier.align(Alignment.TopEnd).offset { IntOffset(0, y.roundToInt()) }.size(30.dp, 52.dp)
+                .pointerInput(Unit) {
+                    detectVerticalDragGestures(
+                        onDragStart = { dragY = latestY; dragging = true },
+                        onDragEnd = { dragging = false },
+                        onDragCancel = { dragging = false },
+                    ) { change, dy ->
+                        change.consume()
+                        dragY = (dragY + dy).coerceIn(0f, latestRange)
+                        val index = (dragY / latestRange * latestLast).roundToInt()
+                        scope.launch { state.scrollToItem(index) }
+                    }
+                },
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            Box(
+                Modifier.padding(end = 3.dp).size(if (dragging) 8.dp else 5.dp, 44.dp).clip(RoundedCornerShape(4.dp))
+                    .background(
+                        if (dragging) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                    )
+            )
+        }
+    }
+    if (dragging) {
+        val text = label((dragY / range * last).roundToInt())
+        if (text.isNotEmpty()) {
+            Text(
+                text,
+                color = MaterialTheme.colorScheme.onPrimary,
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.align(Alignment.TopEnd)
+                    .offset { IntOffset(-with(density) { 48.dp.roundToPx() }, y.roundToInt() + with(density) { 16.dp.roundToPx() }) }
+                    .clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.primary)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+            )
+        }
     }
 }
 

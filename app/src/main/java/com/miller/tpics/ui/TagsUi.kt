@@ -151,7 +151,7 @@ fun TagsScreen() {
     val media by Store.media.collectAsState()
     val counts = remember(media) {
         val c = HashMap<String, Int>()
-        media.forEach { m -> if (m.trashedAt == 0L) m.tags.forEach { c[it] = (c[it] ?: 0) + 1 } }
+        media.forEach { m -> if (m.visible) m.tags.forEach { c[it] = (c[it] ?: 0) + 1 } }
         c
     }
     var editing by remember { mutableStateOf<Tag?>(null) }

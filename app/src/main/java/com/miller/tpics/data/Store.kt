@@ -40,7 +40,10 @@ data class Media(
     val trashedAt: Long = 0,
     val hash: String = "",
     val updated: Long = 0,
+    val priv: Boolean = false,          // carpeta privada
 ) {
+    /** Visible en la galería normal (ni en papelera ni en la carpeta privada). */
+    val visible get() = trashedAt == 0L && !priv
     val isVideo get() = kind == "v"
     val allRefs: List<String> get() = (if (ref.isNotEmpty()) listOf(ref) else parts) +
         (if (thumb.isNotEmpty()) listOf(thumb) else emptyList())
@@ -65,6 +68,7 @@ data class Media(
         }
         if (fav) o.put("f", true)
         if (trashedAt > 0) o.put("x", trashedAt)
+        if (priv) o.put("pv", true)
         if (hash.isNotEmpty()) o.put("hs", hash)
         o.put("u", updated)
         return o
@@ -95,6 +99,7 @@ data class Media(
                 trashedAt = o.optLong("x"),
                 hash = o.optString("hs"),
                 updated = o.optLong("u"),
+                priv = o.optBoolean("pv"),
             )
         }
     }
@@ -109,8 +114,12 @@ data class Account(
 ) {
     val active: Boolean
         get() = status == "active" && (paidUntil == 0L || paidUntil > System.currentTimeMillis())
+    val isTrial: Boolean get() = plan == TRIAL
+    val expired: Boolean
+        get() = status == "active" && paidUntil != 0L && paidUntil <= System.currentTimeMillis()
 
     companion object {
+        const val TRIAL = "prueba"
         fun fromJson(o: JSONObject?): Account = if (o == null) Account() else Account(
             status = o.optString("status", "pending"),
             plan = o.optString("plan"),
@@ -139,6 +148,8 @@ object Store {
     val isAdmin = MutableStateFlow(false)
     val apiUrl = MutableStateFlow("")
     val paymentInfo = MutableStateFlow("")
+    val trialDays = MutableStateFlow(0)
+    val uidNow: String get() = uid
     val syncing = MutableStateFlow(false)
     val loaded = MutableStateFlow(false)
     val messages = MutableSharedFlow<String>(extraBufferCapacity = 16)
@@ -278,6 +289,7 @@ object Store {
                 Db.getObject("v2/config")?.let { c ->
                     apiUrl.value = c.optString("apiUrl").trimEnd('/')
                     paymentInfo.value = c.optString("paymentInfo")
+                    trialDays.value = c.optInt("trialDays")
                 }
 
                 // ¿Soy administrador? La primera cuenta que se crea lo reclama.
@@ -290,7 +302,19 @@ object Store {
                     }
                 }
                 isAdmin.value = admin
-                account.value = Account.fromJson(Db.getObject("${root()}/account"))
+                var accountJson = Db.getObject("${root()}/account")
+                // Cuenta nueva: empieza sola su periodo de prueba, si el administrador lo activó.
+                val days = trialDays.value
+                if (accountJson == null && !admin && days > 0) {
+                    val until = System.currentTimeMillis() + days * 86_400_000L - 3_600_000L
+                    val trial = JSONObject().put("status", "active").put("plan", Account.TRIAL).put("paidUntil", until)
+                    try {
+                        Db.put("${root()}/account", trial.toString())
+                        accountJson = trial
+                    } catch (_: HttpError) {
+                    }
+                }
+                account.value = Account.fromJson(accountJson)
 
                 // Etiquetas
                 val tagObj = Db.getObject("${root()}/tags")
@@ -386,6 +410,8 @@ object Store {
         update(ids) { it.copy(tags = it.tags - tagId) }
 
     fun setFav(ids: Collection<String>, fav: Boolean) = update(ids) { it.copy(fav = fav) }
+
+    fun setPrivate(ids: Collection<String>, priv: Boolean) = update(ids) { it.copy(priv = priv) }
 
     fun trash(ids: Collection<String>) {
         val now = System.currentTimeMillis()

@@ -80,4 +80,6 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.3.1")
     implementation("androidx.media3:media3-ui:1.3.1")
     implementation("net.engawapg.lib:zoomable:1.6.1")
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+    implementation("androidx.biometric:biometric:1.1.0")
 }
