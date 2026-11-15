@@ -7,6 +7,8 @@ on:
       - '**.md'
       - 'worker/**'
       - 'firebase/**'
+      - 'web/**'
+      - '.github/workflows/web.yml'
   workflow_dispatch:
 
 permissions:

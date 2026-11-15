@@ -8,6 +8,11 @@ Respaldo de fotos y videos con etiquetas. App nativa para Android.
 - **Cuentas separadas**: cada persona ve solo lo suyo. El administrador activa cuentas y registra pagos.
 - Los archivos se guardan en Telegram. Los tokens **no** están en la app ni en este repositorio.
 
+## Versión web (PC)
+
+Se publica sola con GitHub Pages en `https://miller1313.github.io/T-Pics/`.
+Para activarla una vez: **Settings → Pages → Source: GitHub Actions**.
+
 ## Descargar
 
 Cada cambio compila la app sola. Ve a **Releases** y descarga `T-Pics.apk`.
@@ -24,6 +29,7 @@ App Android ──(sesión Firebase)──► Worker de Cloudflare ──(token 
 |---|---|
 | `app/` | App Android (Kotlin + Jetpack Compose) |
 | `worker/worker.js` | Servidor intermediario que guarda los tokens |
+| `web/index.html` | Versión web para PC: galería y subida de carpetas |
 | `firebase/database.rules.json` | Reglas de seguridad de la base de datos |
 
 ## Puesta en marcha (una sola vez)
